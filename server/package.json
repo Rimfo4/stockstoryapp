@@ -1,0 +1,20 @@
+{
+  "name": "stock-game-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "시나리오 가상 주식 게임 서버 (Express + mysql2)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.11.0"
+  }
+}
