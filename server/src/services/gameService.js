@@ -8,11 +8,20 @@ const { int } = require('../lib/validate');
 const { currentTick, isClosed, tickToTime, CLOSE_TICK } = require('../logic/clock');
 const { pricePath } = require('../logic/pricing');
 
+// 비율(%) 소수 2자리. 분모 0이면 0
+const pct = (num, den) => (den === 0 ? 0 : Math.round((num / den) * 10000) / 100);
+
 // ---------- 조회 헬퍼 (모두 호출자의 트랜잭션 conn 사용) ----------
 
 async function getStartFund(conn) {
   const [[r]] = await conn.query('SELECT MIN(base_price) * 5 AS start_fund FROM stocks WHERE created_by IS NULL');
   return Number(r.start_fund);
+}
+
+// 환생 횟수 = 7일 완주(FINISHED)한 판 수 (v_user_rebirth). db 는 pool 또는 트랜잭션 conn
+async function getRebirthCount(db, userId) {
+  const [[r]] = await db.query('SELECT rebirth_count FROM v_user_rebirth WHERE user_id = ?', [userId]);
+  return r ? Number(r.rebirth_count) : 0;
 }
 
 async function fetchSession(conn, sessionId, forUpdate) {
@@ -213,6 +222,8 @@ async function toStateDto(conn, ctx) {
     cash: assets.cash,
     holdings_value: assets.holdingsValue,
     total_asset: assets.totalAsset,
+    profit: assets.totalAsset - startFund, // 시작 자금 대비
+    profit_rate: pct(assets.totalAsset - startFund, startFund),
     scenario: ctx.openDay ? publicScenario(ctx.openDay) : null,
     closed_day: ctx.closedDay,
     auto_closed: ctx.autoClosed !== null,
@@ -227,7 +238,9 @@ async function refreshState(conn, ctx) {
 }
 
 module.exports = {
+  pct,
   getStartFund,
+  getRebirthCount,
   getCash,
   getHoldings,
   buildPriceBook,

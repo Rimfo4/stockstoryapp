@@ -20,9 +20,17 @@ function str(value, name, { min = 1, max }) {
   return s;
 }
 
+// 소수 2자리까지의 숫자(숫자 또는 숫자 문자열). DECIMAL(5,2) 컬럼(impact_pct)과 같은 기준
+function decimal(value, name, { min, max }) {
+  const ok = (typeof value === 'number' || typeof value === 'string') && /^-?\d+(\.\d{1,2})?$/.test(String(value));
+  const n = ok ? Number(value) : NaN;
+  if (!ok || n < min || n > max) fail(`${name} 값이 올바르지 않습니다 (${min}~${max}, 소수 2자리까지)`);
+  return n;
+}
+
 function oneOf(value, name, allowed) {
   if (!allowed.includes(value)) fail(`${name}은(는) ${allowed.join(', ')} 중 하나여야 합니다`);
   return value;
 }
 
-module.exports = { int, str, oneOf };
+module.exports = { int, str, decimal, oneOf };

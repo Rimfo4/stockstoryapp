@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { ApiError } = require('../src/lib/errors');
-const { int, str, oneOf } = require('../src/lib/validate');
+const { int, str, oneOf, decimal } = require('../src/lib/validate');
 const { errorHandler } = require('../src/middleware/errorHandler');
 
 function run(err) {
@@ -62,4 +62,14 @@ test('validate.str: 길이는 문자 수 기준(60자 이유), 공백만이면 �
 test('validate.oneOf', () => {
   assert.equal(oneOf('BUY', 's', ['BUY', 'SELL']), 'BUY');
   assert.throws(() => oneOf('HOLD', 's', ['BUY', 'SELL']), (e) => e.code === 'VALIDATION_ERROR');
+});
+
+test('validate.decimal: DECIMAL(5,2) 영향률 — 소수 2자리까지, 범위 ±30', () => {
+  const f = (v) => decimal(v, '영향률', { min: -30, max: 30 });
+  assert.equal(f(1.5), 1.5);
+  assert.equal(f(-30), -30);
+  assert.equal(f('2.25'), 2.25);
+  for (const bad of [30.01, -31, 1.234, '1.2.3', '', null, NaN, Infinity, '1e1']) {
+    assert.throws(() => f(bad), (e) => e.code === 'VALIDATION_ERROR', String(bad));
+  }
 });
