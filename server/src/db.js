@@ -1,4 +1,4 @@
-// mysql2 커넥션 풀 + 트랜잭션 헬퍼
+// mysql2 커넥션 풀 + 트랜잭션
 const mysql = require('mysql2/promise');
 const config = require('./config');
 

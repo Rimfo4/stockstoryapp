@@ -13,6 +13,10 @@ app.use('/auth', require('./routes/auth'));
 // 세션 하위 API: 생명주기/시나리오(sessions) + 시세·주문·정산(trading) 는 같은 /sessions 접두사를 쓴다
 app.use('/sessions', require('./routes/sessions'));
 app.use('/sessions', require('./routes/trading'));
+app.use('/me', require('./routes/me'));
+app.use('/shop', require('./routes/shop'));
+app.use('/rankings', require('./routes/rankings'));
+app.use('/', require('./routes/craft')); // /stocks, /craft/*
 
 app.use(notFound);
 app.use(errorHandler);
