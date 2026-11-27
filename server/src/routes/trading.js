@@ -1,19 +1,35 @@
 // #14 market  #15 stocks/:stockId  #16 orders  #17 portfolio  #18 transactions
-// #19 days/:dayNo/summary  #20 result
+// #19 days/:dayNo/summary  #20 result  #22 items/purchase
 const express = require('express');
 const { ApiError, DeferredError } = require('../lib/errors');
 const { int, str, oneOf } = require('../lib/validate');
 const { requireAuth } = require('../middleware/auth');
 const { tickToTime, CLOSE_TICK } = require('../logic/clock');
-const { sessionRoute, buildPriceBook, computeAssets, getCash, getHoldings, getStartFund } = require('../services/gameService');
+const {
+  pct,
+  sessionRoute,
+  buildPriceBook,
+  computeAssets,
+  getCash,
+  getHoldings,
+  getStartFund,
+  getRebirthCount,
+} = require('../services/gameService');
 
 const router = express.Router();
 router.use(requireAuth);
 
-const pct = (num, den) => (den === 0 ? 0 : Math.round((num / den) * 10000) / 100); // 소수 2자리 %
-
 function assertNotAbandoned(ctx) {
   if (ctx.phase === 'ABANDONED') throw new ApiError('WRONG_PHASE', '포기한 게임입니다');
+}
+
+// 주문·아이템 구매 공통: 장중(PLAYING)에만 가능
+//   이 요청에서 15:30 자동 마감이 처리됐다면 DeferredError 를 돌려준다(마감 정산은 커밋하고 요청은 거부)
+function checkMarketOpen(ctx) {
+  if (ctx.autoClosed) return new DeferredError(new ApiError('MARKET_CLOSED', '장이 마감되었습니다 (15:30 자동 마감 처리됨)'));
+  if (ctx.phase === 'SELECT_SCENARIO' || ctx.phase === 'FINISHED') throw new ApiError('MARKET_CLOSED', '지금은 장이 열려 있지 않습니다');
+  if (ctx.phase !== 'PLAYING') throw new ApiError('WRONG_PHASE', '일시정지 중에는 거래할 수 없습니다');
+  return null;
 }
 
 const stockInfo = (s) => ({
@@ -79,17 +95,13 @@ router.get(
 router.post(
   '/:id/orders',
   sessionRoute(async (conn, ctx, req) => {
-    // 이 요청을 처리하다가 장 마감(15:30)이 지났다면: 마감 정산은 커밋하고 주문은 거부
-    if (ctx.autoClosed) {
-      return new DeferredError(new ApiError('MARKET_CLOSED', '장이 마감되어 주문할 수 없습니다 (15:30 자동 마감 처리됨)'));
-    }
+    const closed = checkMarketOpen(ctx);
+    if (closed) return closed;
     const body = req.body || {};
     const side = oneOf(body.side, 'side', ['BUY', 'SELL']);
     const stockId = int(body.stock_id, 'stock_id');
     const quantity = int(body.quantity, 'quantity', { min: 1, max: 1000000 });
     const reason = str(body.reason, '매매 이유', { min: 1, max: 60 }); // transactions.reason VARCHAR(60)
-    if (ctx.phase === 'SELECT_SCENARIO' || ctx.phase === 'FINISHED') throw new ApiError('MARKET_CLOSED', '지금은 장이 열려 있지 않습니다');
-    if (ctx.phase !== 'PLAYING') throw new ApiError('WRONG_PHASE', '일시정지 중에는 주문할 수 없습니다');
 
     const id = ctx.session.session_id;
     const book = await buildPriceBook(conn, ctx);
@@ -120,6 +132,46 @@ router.post(
       quantity,
       unit_price: unitPrice,
       total,
+      cash: await getCash(conn, id),
+      ...clockInfo(ctx),
+    };
+  }, 201)
+);
+
+// #22 아이템 구매: 고른 종목에 즉시 적용(구매 tick ~ 그날 15:30). 비용은 주식 거래용 현금에서 차감(v_cash)
+router.post(
+  '/:id/items/purchase',
+  sessionRoute(async (conn, ctx, req) => {
+    const closed = checkMarketOpen(ctx);
+    if (closed) return closed;
+    const body = req.body || {};
+    const itemId = int(body.item_id, 'item_id');
+    const stockId = int(body.stock_id, 'stock_id');
+
+    const id = ctx.session.session_id;
+    const [[item]] = await conn.query(
+      'SELECT item_id, name, effect_pct, price, required_rebirth FROM items WHERE item_id = ?',
+      [itemId]
+    );
+    if (!item) throw new ApiError('NOT_FOUND', '아이템을 찾을 수 없습니다');
+    const rebirth = await getRebirthCount(conn, ctx.session.user_id);
+    if (rebirth < item.required_rebirth) {
+      throw new ApiError('FORBIDDEN', `환생 ${item.required_rebirth}회 이상부터 살 수 있습니다`, { rebirth_count: rebirth });
+    }
+    const stock = (await buildPriceBook(conn, ctx)).stock(stockId);
+    const cash = await getCash(conn, id);
+    if (item.price > cash) throw new ApiError('NOT_ENOUGH_CASH', '현금이 부족합니다', { cash, required: item.price });
+
+    const [r] = await conn.query(
+      "INSERT INTO transactions (session_id, tx_type, stock_id, item_id, quantity, game_day, game_tick) VALUES (?, 'ITEM', ?, ?, 1, ?, ?)",
+      [id, stockId, itemId, ctx.dayNo, ctx.tick]
+    );
+    // 구매 기록이 가격 함수의 입력이므로 장부를 다시 만들어 적용 후 가격을 돌려준다
+    const price = (await buildPriceBook(conn, ctx)).path(stockId)[ctx.tick];
+    return {
+      tx_id: r.insertId,
+      item: { item_id: item.item_id, name: item.name, effect_pct: item.effect_pct, price: item.price },
+      stock: { stock_id: stock.stock_id, name: stock.name, price },
       cash: await getCash(conn, id),
       ...clockInfo(ctx),
     };
@@ -268,7 +320,6 @@ router.get(
       "SELECT COUNT(*) AS trade_count FROM transactions WHERE session_id = ? AND tx_type IN ('BUY','SELL')",
       [id]
     );
-    const [[rb]] = await conn.query('SELECT rebirth_count FROM v_user_rebirth WHERE user_id = ?', [userId]);
     const [[rk]] = await conn.query('SELECT ranking_no FROM v_ranking WHERE session_id = ?', [id]);
     // 창작 종목/시나리오를 쓴 판은 랭킹 제외, 사용자별 최고 기록 1개만 등록
     const [[best]] = await conn.query('SELECT ranking_no FROM v_ranking WHERE user_id = ?', [userId]);
@@ -280,7 +331,7 @@ router.get(
       profit: finalAsset - startFund,
       profit_rate: pct(finalAsset - startFund, startFund),
       trade_count: Number(tc.trade_count),
-      rebirth_count: Number(rb.rebirth_count),
+      rebirth_count: await getRebirthCount(conn, userId),
       days: ctx.days.map((d) => ({ day_no: d.day_no, scenario_title: d.title, end_asset: d.end_asset })),
       ranking: {
         is_best_record: !!rk, // 이 판이 내 랭킹 등록 기록(최고 기록)인지
